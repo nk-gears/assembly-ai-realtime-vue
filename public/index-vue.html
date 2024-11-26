@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Recorder with Transcription</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
+    <!-- <script src="https://www.unpkg.com/assemblyai@latest/dist/assemblyai.umd.min.js"></script> -->
+    <script src="https://www.WebRTC-Experiment.com/RecordRTC.js"></script>
+    <style>
+      @keyframes pulse-animation {
+        0% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.05);
+          opacity: 0.7;
+        }
+        100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+      }
+      .pulse {
+        animation: pulse-animation 2s infinite;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="app"
+      class="min-h-screen flex flex-col items-center justify-center bg-gray-100 p-4"
+    >
+      <div
+        class="w-full max-w-6xl bg-white shadow-md rounded-lg p-4 flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4"
+      >
+        <div class="flex-1">
+          <label
+            for="transcript"
+            class="block text-sm font-medium text-gray-700"
+            >Transcript</label
+          >
+          <textarea
+            v-model="transcript"
+            rows="20"
+            class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            readonly
+          ></textarea>
+        </div>
+        <div class="flex-1">
+          <label
+            for="translation"
+            class="block text-sm font-medium text-gray-700"
+            >Translation</label
+          >
+          <select
+            v-model="selectedLanguage"
+            class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+          >
+            <option
+              v-for="lang in languages"
+              :key="lang.value"
+              :value="lang.value"
+            >
+              {{ lang.label }}
+            </option>
+          </select>
+          <textarea
+            v-model="translation"
+            rows="18"
+            class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            readonly
+          ></textarea>
+        </div>
+      </div>
+      <button
+        @click="toggleRecording"
+        class="mt-4 px-6 py-2 bg-blue-500 text-white rounded-md shadow hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+      >
+        {{ isRecording ? 'Stop Recording' : 'Record' }}
+      </button>
+    </div>
+
+    <script>
+      new Vue({
+        el: "#app",
+        data: {
+          scriptsLoaded: {
+            assemblyai: false,
+            recordRTC: false,
+          },
+
+          token: null, // AssemblyAI token,
+          isRecording: false,
+          transcript: "",
+          translation: "",
+          selectedLanguage: "es",
+          recorder: null,
+          rt: null,
+          languages: [
+            { value: "es", label: "Spanish" },
+            { value: "fr", label: "French" },
+            { value: "de", label: "German" },
+            { value: "zh", label: "Chinese" },
+          ],
+        },
+        async mounted() {
+          // Automatically load the script and initialize AssemblyAI
+          try {
+            await this.initializeAssemblyAI();
+            await this.initializeRecorder();
+            console.log("Dependencies loaded and initialized successfully.");
+          } catch (error) {
+            console.error("Error during initialization:", error);
+          }
+        },
+        methods: {
+          loadScript(url, key) {
+            return new Promise((resolve, reject) => {
+              if (this.scriptsLoaded[key]) {
+                resolve(); // Script already loaded
+                return;
+              }
+              const script = document.createElement("script");
+              script.src = url;
+              script.async = true;
+              script.onload = () => {
+                this.scriptsLoaded[key] = true;
+                console.log(`${key} script loaded successfully.`);
+                resolve();
+              };
+              script.onerror = () =>
+                reject(new Error(`Failed to load ${key} script.`));
+              document.head.appendChild(script);
+            });
+          },
+          async loadDependencies() {
+            try {
+              // Load AssemblyAI and RecordRTC scripts dynamically
+              await this.loadScript(
+                "https://www.unpkg.com/assemblyai@latest/dist/assemblyai.umd.min.js",
+                "assemblyai"
+              );
+              await this.loadScript(
+                "https://www.WebRTC-Experiment.com/RecordRTC.js",
+                "recordRTC"
+              );
+            } catch (error) {
+              console.error("Error loading dependencies:", error);
+              throw error; // Ensure initialization halts if a dependency fails
+            }
+          },
+          async fetchToken() {
+            try {
+              const response = await fetch("/token"); // Replace with your API endpoint
+              const data = await response.json();
+              this.token = data.token;
+              console.log("Token fetched successfully:", this.token);
+            } catch (error) {
+              console.error("Error fetching token:", error);
+            }
+          },
+          async initializeAssemblyAI() {
+            try {
+              await this.loadDependencies(); // Ensure dependencies are loaded
+              if (!this.token) {
+                await this.fetchToken(); // Fetch token if not already fetched
+              }
+              this.rt = new assemblyai.RealtimeService({ token: this.token });
+              console.log("AssemblyAI initialized:", this.rt);
+            } catch (error) {
+              console.error("Error initializing AssemblyAI:", error);
+            }
+          },
+          async initializeRecorder() {
+            try {
+              // Check for MediaDevice support
+              if (
+                !navigator.mediaDevices ||
+                !navigator.mediaDevices.getUserMedia
+              ) {
+                throw new Error(
+                  "MediaDevices API is not supported in this browser."
+                );
+              }
+
+              const stream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+              });
+              this.recorder = new RecordRTC(stream, {
+                type: "audio",
+                mimeType: "audio/webm;codecs=pcm",
+                recorderType: StereoAudioRecorder,
+                timeSlice: 250,
+                desiredSampRate: 16000,
+                numberOfAudioChannels: 1,
+                bufferSize: 16384,
+                audioBitsPerSecond: 128000,
+              });
+              console.log("Recorder initialized:", this.recorder);
+            } catch (error) {
+              console.error("Error initializing recorder:", error);
+            }
+          },
+          async toggleRecording() {
+            if (this.isRecording) {
+              await this.stopRecording();
+            } else {
+              await this.startRecording();
+            }
+            this.isRecording = !this.isRecording;
+          },
+          async startRecording() {
+            this.transcript = "";
+            this.translation = "";
+            const response = await fetch("/token");
+            const data = await response.json();
+
+            this.rt = new assemblyai.RealtimeService({ token: data.token });
+
+            const texts = {};
+            let translatedText = "";
+
+            this.rt.on("transcript", async (message) => {
+              let msg = "";
+              texts[message.audio_start] = message.text;
+              const keys = Object.keys(texts).sort((a, b) => a - b);
+              keys.forEach((key) => (msg += ` ${texts[key]}`));
+              this.transcript = msg;
+
+              if (message.message_type === "FinalTranscript") {
+                const response = await fetch("/translate", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    text: message.text,
+                    target_lang: this.selectedLanguage,
+                  }),
+                });
+                const data = await response.json();
+                translatedText += ` ${data.translation.text}`;
+                this.translation = translatedText;
+              }
+            });
+
+            this.rt.on("error", async (error) => {
+              console.error(error);
+              await this.rt.close();
+            });
+
+            this.rt.on("close", () => {
+              this.rt = null;
+            });
+
+            await this.rt.connect();
+
+            navigator.mediaDevices
+              .getUserMedia({ audio: true })
+              .then((stream) => {
+                this.recorder = new RecordRTC(stream, {
+                  type: "audio",
+                  mimeType: "audio/webm;codecs=pcm",
+                  recorderType: StereoAudioRecorder,
+                  timeSlice: 250,
+                  desiredSampRate: 16000,
+                  numberOfAudioChannels: 1,
+                  bufferSize: 16384,
+                  audioBitsPerSecond: 128000,
+                  ondataavailable: async (blob) => {
+                    if (this.rt) {
+                      this.rt.sendAudio(await blob.arrayBuffer());
+                    }
+                  },
+                });
+                this.recorder.startRecording();
+              })
+              .catch((err) => console.error(err));
+          },
+          async stopRecording() {
+            if (this.rt) {
+              await this.rt.close(false);
+              this.rt = null;
+            }
+            if (this.recorder) {
+              this.recorder.stopRecording();
+              this.recorder = null;
+            }
+          },
+        },
+      });
+    </script>
+  </body>
+</html>
